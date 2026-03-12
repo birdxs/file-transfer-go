@@ -1,81 +1,90 @@
 # ==============================================
-# 多架构 Dockerfile - 修复工作目录
+# 多架构 Dockerfile - 支持 AMD64 & ARM64
 # ==============================================
 
-# 前端构建阶段 - 使用多架构 node 镜像
-FROM node:20-alpine AS frontend-builder
+# ==============================================
+# 前端构建阶段 (原生架构构建，利用 Buildx 跨平台)
+# ==============================================
+FROM --platform=$BUILDPLATFORM node:20-alpine AS frontend-builder
 
 # 安装 yarn
 RUN apk add --no-cache yarn
 
 WORKDIR /app/chuan-next
 
-# 复制所有源代码
+# 复制前端源代码
+COPY chuan-next/package.json chuan-next/yarn.lock ./
+RUN yarn install --frozen-lockfile --network-timeout 300000
+
+# 复制所有前端源代码
 COPY chuan-next/ ./
 
 # 清理构建文件
 RUN rm -rf .next out
 
-# 前端依赖和构建
-COPY chuan-next/package.json chuan-next/yarn.lock ./
-RUN yarn install --frozen-lockfile --network-timeout 300000
+# 构建参数：目标架构信息
+ARG TARGETPLATFORM
+ARG BUILDPLATFORM
 
-# 构建前端
+# 前端构建 (SSG)
+# 临时移除 API 目录进行 SSG 构建
 RUN if [ -d "src/app/api" ]; then mv src/app/api /tmp/api-backup; fi && \
     NEXT_EXPORT=true NODE_ENV=production NEXT_PUBLIC_BACKEND_URL= NEXT_PUBLIC_WS_URL= NEXT_PUBLIC_API_BASE_URL= yarn build && \
     if [ -d "/tmp/api-backup" ]; then mv /tmp/api-backup src/app/api; fi
 
 # ==============================================
-
-# Go 构建阶段 - 支持多架构
-FROM golang:1.21-alpine AS go-builder
+# Go 构建阶段 (使用交叉编译)
+# ==============================================
+FROM --platform=$BUILDPLATFORM golang:1.21-alpine AS go-builder
 
 # 安装构建依赖
 RUN apk add --no-cache git ca-certificates tzdata
 
-# 使用 TARGETARCH 构建参数来自动设置架构
+# 构建参数：目标架构信息
+ARG TARGETPLATFORM
+ARG TARGETOS
 ARG TARGETARCH
-ARG TARGETOS=linux
+ARG TARGETVARIANT
 
 # 设置 Go 环境变量
 ENV GOPROXY=https://proxy.golang.org,direct
 ENV CGO_ENABLED=0
-ENV GOOS=${TARGETOS}
-ENV GOARCH=${TARGETARCH}
-
-# 针对 ARM64 架构的特殊处理
-RUN if [ "${TARGETARCH}" = "arm64" ]; then \
-      echo "Building for ARM64 architecture" && \
-      apk add --no-cache gcc musl-dev; \
-    fi
 
 WORKDIR /app
 
-# 先复制所有源代码
-COPY . .
-
-# Go 依赖
+# 复制 Go 模块文件
 COPY go.mod go.sum ./
 RUN go mod download
 
-# 拷贝前端构建结果 - 注意正确的源路径
+# 复制所有源代码
+COPY . .
+
+# 拷贝前端构建结果
 COPY --from=frontend-builder /app/chuan-next/out ./internal/web/frontend/
 
-# 构建 Go 应用 - 根据目标架构自动构建
-RUN echo "Building Go binary for ${GOOS}/${GOARCH}" && \
+# 交叉编译 Go 应用
+# 根据目标平台设置 GOOS 和 GOARCH
+RUN export GOOS=${TARGETOS} && \
+    export GOARCH=${TARGETARCH} && \
+    if [ "${TARGETARCH}" = "arm64" ] && [ -n "${TARGETVARIANT}" ]; then \
+        export GOARM=${TARGETVARIANT#v}; \
+    fi && \
+    echo "Building for ${GOOS}/${GOARCH}${TARGETVARIANT:+/${TARGETVARIANT}}" && \
     go build -ldflags='-s -w -extldflags "-static"' -o server ./cmd
 
 # ==============================================
-
-# 最终镜像 - 使用多架构 alpine 镜像
+# 最终镜像 (目标平台)
+# ==============================================
 FROM alpine:3.18
 
-# 添加必要的包
 RUN apk add --no-cache ca-certificates tzdata && \
     adduser -D -s /bin/sh appuser
 
 WORKDIR /app
+
+# 从构建阶段复制二进制文件 (使用正确的架构)
 COPY --from=go-builder --chown=appuser:appuser /app/server ./
+
 USER appuser
 
 EXPOSE 8080
