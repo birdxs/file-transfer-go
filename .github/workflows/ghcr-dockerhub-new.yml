@@ -26,7 +26,7 @@ on:
 
 env:
   REGISTRY: docker.io
-  IMAGE_NAME: matrixseven/file-transfer-go
+  IMAGE_NAME: birdxs/file-transfer-go
 
 jobs:
   build:
