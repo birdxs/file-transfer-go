@@ -1,4 +1,4 @@
-name: 🚀 kimi优化 Build and Push Multi-Arch Docker Image (AMD64 & ARM64)
+name: 🚀 Build and Push Multi-Arch Docker Image (AMD64 & ARM64)
 
 on:
   # 手动触发
@@ -136,7 +136,11 @@ jobs:
 
     strategy:
       matrix:
-        platform: [linux/amd64, linux/arm64]
+        include:
+          - platform: linux/amd64
+            file_suffix: amd64
+          - platform: linux/arm64
+            file_suffix: arm64
 
     steps:
       - name: 📥 Checkout code
@@ -152,10 +156,10 @@ jobs:
         with:
           image-ref: '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest'
           format: 'sarif'
-          output: 'trivy-results-${{ matrix.platform }}.sarif'
+          output: 'trivy-results-${{ matrix.file_suffix }}.sarif'
 
       - name: 📤 Upload Trivy scan results
         uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
-          sarif_file: 'trivy-results-${{ matrix.platform }}.sarif'
+          sarif_file: 'trivy-results-${{ matrix.file_suffix }}.sarif'
